@@ -32,7 +32,7 @@ type the command
 
 ### Acknowledgement
 
-http://www.ict-itetris.eu/
-https://github.com/alexvoronov/geonetworking
-https://github.com/riebl/vanetza
-https://github.com/bastibl/its-g5-cam
+- http://www.ict-itetris.eu/
+- https://github.com/alexvoronov/geonetworking
+- https://github.com/riebl/vanetza
+- https://github.com/bastibl/its-g5-cam
