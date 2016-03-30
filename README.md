@@ -8,7 +8,7 @@ v2x-lte module is a new ns-3 extension containing a CAM implementation on LTE an
 *The code is tested in 3.25 version of ns-3 simulator*
 
 
-### Build v2v
+### Build
 Copy and paste the v2x-lte package under src/ folder of the ns-3 simulator.
 
 type the command
