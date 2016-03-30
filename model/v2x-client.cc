@@ -30,12 +30,15 @@
 
 #include "math.h"
 
-//#include "gen/cam.h"
+#include "gen/cam.h"
+#include <algorithm>
 
 
 NS_LOG_COMPONENT_DEFINE ("V2xClient");
 
 namespace ns3 {
+
+  // Source: https://github.com/alexvoronov/geonetworking
 
   static int32_t LEAP_SECONDS_SINCE_2004 = 4; // Let's assume we're always in 2015.
 
@@ -107,7 +110,12 @@ V2xClient::GetTypeId (void)
 		   BooleanValue(true),
 		   MakeBooleanAccessor (&V2xClient::m_withCam),
 		   MakeBooleanChecker ())
-
+    .AddTraceSource ("Tx", "A packet is created and send",
+		   MakeTraceSourceAccessor (&V2xClient::m_txTrace),
+		  "ns3::Packet::TracedCallback")
+    .AddTraceSource ("Rx", "A packet is received",
+		   MakeTraceSourceAccessor (&V2xClient::m_rxTrace),
+		  "ns3::Packet::TracedCallback")
   ;
   return tid;
 }
@@ -283,6 +291,7 @@ V2xClient::AquireMobilityInfo (void)
   m_currentSourPosVector.Ts = (uint32_t) Simulator::Now ().GetMilliSeconds ();
   m_currentSourPosVector.Lat = (uint32_t) m_mobilityModel->GetPosition ().x;
   m_currentSourPosVector.Lon = (uint32_t) m_mobilityModel->GetPosition ().y;
+  m_currentSourPosVector.Alt = (uint32_t) m_mobilityModel->GetPosition ().z;
 
   m_currentSourPosVector._speed = sqrt (pow (m_mobilityModel->GetVelocity().x, 2) + pow (m_mobilityModel->GetVelocity().y, 2));
   m_currentSourPosVector._heading = 0;
@@ -299,8 +308,9 @@ V2xClient::SendPacket (Ptr<Packet> packet)
   NS_ASSERT (m_sendEvent.IsExpired ());
 
   if ((m_send_socket->Send (packet)) >= 0)
-  //if ((m_send_socket->SendTo (packet, 0, m_peerAddress)) >= 0)
     {
+      // Trace
+      m_txTrace(packet);
       ++m_sentCounter;
     }
   else
@@ -309,15 +319,15 @@ V2xClient::SendPacket (Ptr<Packet> packet)
     }
 }
 
+typedef std::vector<uint8_t> ByteBuffer;
 
-/*
-static int
-write_out(const void *buffer, size_t size, void *app_key) {
-    FILE *out_fp = app_key;
-    size_t wrote = fwrite(buffer, 1, size, out_fp);
-    return (wrote == size) ? 0 : -1;
+static int write_buffer(const void* in, std::size_t size, void* out_void)
+{
+  NS_ASSERT(out_void != nullptr);
+  ByteBuffer* out = static_cast<ByteBuffer*>(out_void);
+  std::copy_n(static_cast<const uint8_t*>(in), size, std::back_inserter(*out));
+  return 0;
 }
-*/
 
 void
 V2xClient::SendCAM (bool withLowFreq)
@@ -326,78 +336,88 @@ V2xClient::SendCAM (bool withLowFreq)
 
   AquireMobilityInfo();
 
-/* TODO: fix CAM payload generation (wscript linker error)
-
   CAM_t *message = static_cast<CAM_t*>(calloc(1, sizeof(CAM_t)));
+  if(!message) {
+      NS_FATAL_ERROR("calloc() failed");
+  }
+  assert(message); // Infinite memory!
 
-  ItsPduHeader_t& header = (message)->header;
-  header.protocolVersion = 0;//ItsPduHeader__protocolVersion_currentVersion;
-  header.messageID = 0;//ItsPduHeader__messageID_cam;
-  header.stationID = 0;
+  // Source: https://github.com/bastibl/its-g5-cam
 
-  CoopAwareness_t& cam = (message)->cam;
-  cam.generationDeltaTime = 0;
-  BasicContainer_t& basic = cam.camParameters.basicContainer;
-  HighFrequencyContainer_t& hfc = cam.camParameters.highFrequencyContainer;
+  // initialize struct
+  message->header.protocolVersion = protocolVersion_currentVersion;
+  message->header.messageID = messageID_cam;
+  message->header.stationID = m_currentSourPosVector.gnAddr;
 
-  basic.stationType = StationType_passengerCar;
-  basic.referencePosition.altitude.altitudeValue = AltitudeValue_oneCentimeter;
-  basic.referencePosition.altitude.altitudeConfidence = AltitudeConfidence_unavailable;
-  basic.referencePosition.longitude = 0 * Longitude_oneMicrodegreeEast;
-  basic.referencePosition.latitude = 0 * Latitude_oneMicrodegreeNorth;
-  basic.referencePosition.positionConfidenceEllipse.semiMajorConfidence = SemiAxisLength_unavailable;
-  basic.referencePosition.positionConfidenceEllipse.semiMinorConfidence = SemiAxisLength_unavailable;
+  /// CAM
+  message->cam.generationDeltaTime = m_currentSourPosVector.Ts;
 
-  hfc.present = HighFrequencyContainer_PR_basicVehicleContainerHighFrequency;
+  // basicContainer
+  message->cam.camParameters.basicContainer.stationType = StationType_passengerCar;
 
-  BasicVehicleContainerHighFrequency& bvc = hfc.choice.basicVehicleContainerHighFrequency;
-  bvc.speed.speedValue = 0;
-  bvc.speed.speedConfidence = SpeedConfidence_equalOrWithinOneCentimeterPerSec * 3;
+  message->cam.camParameters.basicContainer.referencePosition.latitude = m_currentSourPosVector.Lat;
+  message->cam.camParameters.basicContainer.referencePosition.longitude = m_currentSourPosVector.Lon;
+  message->cam.camParameters.basicContainer.referencePosition.altitude.altitudeValue = m_currentSourPosVector.Alt;
+  message->cam.camParameters.basicContainer.referencePosition.altitude.altitudeConfidence = AltitudeConfidence_alt_020_00;
 
+  // highFrequencyContainer
+  message->cam.camParameters.highFrequencyContainer.present = HighFrequencyContainer_PR_basicVehicleContainerHighFrequency;
+  message->cam.camParameters.highFrequencyContainer.choice.basicVehicleContainerHighFrequency.heading.headingValue = HeadingValue_wgs84North;
+  message->cam.camParameters.highFrequencyContainer.choice.basicVehicleContainerHighFrequency.heading.headingConfidence = HeadingConfidence_equalOrWithinZeroPointOneDegree;
+  message->cam.camParameters.highFrequencyContainer.choice.basicVehicleContainerHighFrequency.speed.speedValue = m_currentSourPosVector._speed * SpeedValue_oneCentimeterPerSec;
+  message->cam.camParameters.highFrequencyContainer.choice.basicVehicleContainerHighFrequency.speed.speedConfidence = SpeedConfidence_equalOrWithinOneCentimeterPerSec * 3;
+  message->cam.camParameters.highFrequencyContainer.choice.basicVehicleContainerHighFrequency.driveDirection = DriveDirection_forward;
+  message->cam.camParameters.highFrequencyContainer.choice.basicVehicleContainerHighFrequency.vehicleLength.vehicleLengthValue = VehicleLengthValue_tenCentimeters * 48; // 4,77 m
+  message->cam.camParameters.highFrequencyContainer.choice.basicVehicleContainerHighFrequency.vehicleLength.vehicleLengthConfidenceIndication = VehicleLengthConfidenceIndication_noTrailerPresent;
+  message->cam.camParameters.highFrequencyContainer.choice.basicVehicleContainerHighFrequency.vehicleWidth = VehicleWidth_tenCentimeters * 19; // 1,83 m
 
+  // LowFrequencyContainer
   if (withLowFreq)
     {
-      LowFrequencyContainer_t*& lfc = cam.camParameters.lowFrequencyContainer;
+      LowFrequencyContainer_t *lfc = static_cast<LowFrequencyContainer_t*>(calloc(1, sizeof(LowFrequencyContainer_t)));
+      if(!lfc) {
+	  NS_FATAL_ERROR("calloc() failed");
+      }
+      assert(lfc);
+
       lfc->present = LowFrequencyContainer_PR_basicVehicleContainerLowFrequency;
+      lfc->choice.basicVehicleContainerLowFrequency.vehicleRole = VehicleRole_default;
+      lfc->choice.basicVehicleContainerLowFrequency.exteriorLights.buf = static_cast<uint8_t*>(calloc(1, sizeof(uint8_t)));
+      lfc->choice.basicVehicleContainerLowFrequency.exteriorLights.size = 1;
+      lfc->choice.basicVehicleContainerLowFrequency.exteriorLights.buf[0] |= 1 << (7 - ExteriorLights_daytimeRunningLightsOn);
+      // TODO: pathHistory
+      //lfc->choice.basicVehicleContainerLowFrequency.pathHistory
 
-      BasicVehicleContainerLowFrequency& bvc = lfc->choice.basicVehicleContainerLowFrequency;
-      bvc.vehicleRole = VehicleRole_default;
-      //bvc.exteriorLights.buf = static_cast<uint8_t*>(malloc(1));
-      //bvc.exteriorLights.size = 1;
-      //bvc.exteriorLights.buf[0] |= 1 << (7 - ExteriorLights_daytimeRunningLightsOn);
-      // TODO: add pathHistory
-
+      message->cam.camParameters.lowFrequencyContainer = lfc;
     }
 
-  //NS_LOG_UNCOND(sizeof(message));
 
-  asn_enc_rval_t erv;
-  erv = uper_encode(&asn_DEF_CAM, message, write_out, 0);
+  ByteBuffer buffer;
 
-  if(erv.encoded == -1)
+  //uint8_t *buffer = new uint8_t[680];
+
+  asn_enc_rval_t ec;
+  ec = uper_encode(&asn_DEF_CAM, message, write_buffer, &buffer);
+
+  if(ec.encoded < 0)
     {
-      NS_LOG_UNCOND("Cannot encode CAM");
+      const char* failed_type = ec.failed_type ? ec.failed_type->name : "unknown";
+      NS_FATAL_ERROR("Unaligned PER encoding of type " << asn_DEF_CAM.name << " failed because of " << failed_type << " sub-type");
     }
 
-  uint32_t bytes = erv.encoded / 8;
-  bytes += !!(erv.encoded % 8);
+  uint32_t bytes = ec.encoded / 8;
+  bytes += !!(ec.encoded % 8);
 
-  NS_LOG_UNCOND(erv.encoded);
+  //NS_LOG_DEBUG("CAM " << ec.encoded << " bit " << bytes);
 
-  //ASN_STRUCT_FREE(asn_DEF_CAM, message);
 
-*/
+  //asn_fprint(stdout, &asn_DEF_CAM, message);
 
-  uint32_t size = 341;
-  if (withLowFreq)
-    {
-      size = 346;
-    }
 
-  uint32_t bytes = size / 8;
-  bytes += !!(size % 8);
+  ASN_STRUCT_FREE(asn_DEF_CAM, message);
 
-  Ptr<Packet> packet = Create<Packet> (bytes + 9*4 + 4); // packet + commonHeader + btpHeader
+
+  Ptr<Packet> packet = Create<Packet> (buffer.data(), bytes);
 
   Ptr<GnAddress> resAddress = CreateObject<GnAddress> ();
   //resAddress->Set(GnAddress::BROAD, 1); // nodeId == ID_BROADCAST
@@ -501,6 +521,9 @@ V2xClient::Receive (Ptr<Socket> socket) {
       break;
     }
 
+    // Trace
+    m_rxTrace(packet);
+
     /*
      * GeoNetworking Basic Transport Header
      */
@@ -536,19 +559,44 @@ V2xClient::Receive (Ptr<Socket> socket) {
       }
     else
       {
-	//Time txTime = milliSecondsMod32ToTime(commonHeader.GetSourPosVector().Ts).GetMilliSeconds();
 
-	NS_LOG_DEBUG ("RX " << packet->GetSize () <<
-		     //" bytes from "<< InetSocketAddress::ConvertFrom (from).GetIpv4 () <<
+	uint32_t packetSize = packet->GetSize ();
+
+	CAM_t *message = static_cast<CAM_t*>(calloc(1, sizeof(CAM_t)));
+	if(!message) {
+	    NS_FATAL_ERROR("calloc() failed");
+	}
+
+	uint8_t *buffer=new uint8_t[packetSize + 1];
+	packet->CopyData (buffer, packetSize);
+
+	asn_codec_ctx_t ctx;
+	asn_dec_rval_t dc = uper_decode_complete(&ctx, &asn_DEF_CAM, (void**)&message, buffer, packetSize);
+
+	if (dc.code != RC_OK)
+	  {
+	    NS_FATAL_ERROR("Unaligned PER decoding failed");
+	  }
+
+	//asn_fprint(stdout, &asn_DEF_CAM, message);
+
+	if (message->cam.camParameters.lowFrequencyContainer != nullptr)
+	  {
+	    NS_LOG_DEBUG("LowFrequencyContainer");
+	  }
+
+	if (message->cam.camParameters.specialVehicleContainer != nullptr)
+	  {
+	    NS_LOG_DEBUG("SpecialVehicleContainer");
+	  }
+
+	NS_LOG_DEBUG ("RX " << packetSize <<
 		     " bytes from "<< commonHeader.GetSourPosVector().gnAddr <<
 		     " Uid: " << packet->GetUid () <<
 		     //" TXtime: " << milliSecondsMod32ToTime(commonHeader.GetSourPosVector().Ts).GetMilliSeconds() <<
 		     " TXtime: " << commonHeader.GetSourPosVector().Ts <<
 		     " RXtime: " << Simulator::Now ().GetMilliSeconds() <<
 		     " Delay: " << (Simulator::Now ().GetMilliSeconds() - commonHeader.GetSourPosVector().Ts) << "ms");
-
-	//NS_LOG_UNCOND (DistanceInMeters (0, 0, commonHeader.GetSourPosVector ().Lat, commonHeader.GetSourPosVector ().Lon ) << "m");
-	//packet->RemoveAtStart(packet->GetSize());
       }
 
     /*

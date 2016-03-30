@@ -1,7 +1,7 @@
 /* -*- Mode:C++; c-file-style:"gnu"; indent-tabs-mode:nil; -*- */
 
 // Include a header file from your module to test.
-#include "ns3/v2x-lte.h"
+//#include "ns3/v2x-lte.h"
 
 // An essential include is test.h
 #include "ns3/test.h"
@@ -65,4 +65,3 @@ V2xLteTestSuite::V2xLteTestSuite ()
 
 // Do not forget to allocate an instance of this TestSuite
 static V2xLteTestSuite v2xLteTestSuite;
-

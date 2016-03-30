@@ -4,6 +4,7 @@
 
 #include "ns3/application.h"
 #include "ns3/mobility-module.h"
+#include "ns3/traced-callback.h"
 
 #include "gn-common-header.h"
 #include "location-table.h"
@@ -76,6 +77,10 @@ namespace ns3 {
     Time m_cam_lastSendLowFreq;
     GnCommonHeader::LongPositionVector m_cam_lastSendSourPosVector;
     uint16_t m_cam_highDynamics;
+
+    // Trace
+    TracedCallback<Ptr<const Packet> > m_txTrace;
+    TracedCallback<Ptr<const Packet> > m_rxTrace;
 
   };
 
